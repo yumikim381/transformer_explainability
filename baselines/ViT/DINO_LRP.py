@@ -20,11 +20,12 @@ def _cfg(url='', **kwargs):
         **kwargs
     }
 
+# Configs are from this website
+#https://github.com/huggingface/pytorch-image-models/blob/main/timm/models/vision_transformer.py#L1122
 
 default_cfgs = {
-    'vit_small_patch16_224.dino': _cfg(
-        url='https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/vit_small_patch16_224.dino',
-    ),
+    'vit_small_patch16_224_dino': _cfg(
+        url="https://dl.fbaipublicfiles.com/dino/dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth")
 }
 
 def compute_rollout_attention(all_layer_matrices, start_layer=0):
@@ -402,7 +403,7 @@ def _conv_filter(state_dict, patch_size=16):
 def vit_base_patch16_224_dino(pretrained=False, **kwargs):
     model = VisionTransformer(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True, **kwargs)
-    model.default_cfg = default_cfgs['vit_small_patch16_224.dino']
+    model.default_cfg = default_cfgs['vit_small_patch16_224_dino']
     if pretrained:
         load_pretrained(
             model, num_classes=model.num_classes, in_chans=kwargs.get('in_chans', 3), filter_fn=_conv_filter)
