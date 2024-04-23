@@ -10,6 +10,7 @@ from baselines.ViT.helpers import load_pretrained
 from baselines.ViT.weight_init import trunc_normal_
 from baselines.ViT.layer_helpers import to_2tuple
 
+ # For each layer they defined a function in "layer_ours.py"
 
 def _cfg(url='', **kwargs):
     return {
@@ -48,6 +49,8 @@ def compute_rollout_attention(all_layer_matrices, start_layer=0):
         joint_attention = all_layer_matrices[i].bmm(joint_attention)
     return joint_attention
 
+#classification head 
+# This is the two layer MLP head to classify the image based on [CLS] token embedding.
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, drop=0.):
         super().__init__()
@@ -66,6 +69,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+    # Partial derivation of the operation we are doing in this layer 
     def relprop(self, cam, **kwargs):
         cam = self.drop.relprop(cam, **kwargs)
         cam = self.fc2.relprop(cam, **kwargs)
@@ -176,7 +180,11 @@ class Attention(nn.Module):
 
         return self.qkv.relprop(cam_qkv, **kwargs)
 
-
+## transformer consists of blocks 
+"""
+each block b is composed of self-attention, skip con- nections, 
+and additional linear and normalization layers in a certain assembly
+"""
 class Block(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.):
@@ -214,9 +222,15 @@ class Block(nn.Module):
 
 
 class PatchEmbed(nn.Module):
-    """ Image to Patch Embedding
+    """
+    Get patch embeddings
+    The paper splits the image into patches of equal size and do a linear transformation on the flattened pixels for each patch.
+
+    We implement the same thing through a convolution layer, because it's simpler to implement.
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768):
+        #in_chanss is the number of channels in the input image (3 for rgb)
+        # transformer embeddings size for embed_dim
         super().__init__()
         img_size = to_2tuple(img_size)
         patch_size = to_2tuple(patch_size)
@@ -226,12 +240,17 @@ class PatchEmbed(nn.Module):
         self.num_patches = num_patches
 
         self.proj = Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
-
+        """
+        We create a convolution layer with a kernel size and and stride length equal to patch size. 
+        This is equivalent to splitting the image into patches and doing a linear transformation on each patch.
+        """ 
     def forward(self, x):
+        #x is the input image of shape [batch_size, channels, height, width]
         B, C, H, W = x.shape
         # FIXME look at relaxing size constraints
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        #Apply convolution layer
         x = self.proj(x).flatten(2).transpose(1, 2)
         return x
 
@@ -308,6 +327,7 @@ class VisionTransformer(nn.Module):
 
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
+        # Add positional embeddings for the given patches
         x = self.add([x, self.pos_embed])
 
         x.register_hook(self.save_inp_grad)
@@ -361,6 +381,7 @@ class VisionTransformer(nn.Module):
                 cam = blk.attn.get_attn_cam()
                 cam = cam[0].reshape(-1, cam.shape[-1], cam.shape[-1])
                 grad = grad[0].reshape(-1, grad.shape[-1], grad.shape[-1])
+                #Equation 13 in paper 
                 cam = grad * cam
                 cam = cam.clamp(min=0).mean(dim=0)
                 cams.append(cam.unsqueeze(0))
