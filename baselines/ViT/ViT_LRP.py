@@ -10,6 +10,7 @@ from baselines.ViT.helpers import load_pretrained
 from baselines.ViT.weight_init import trunc_normal_
 from baselines.ViT.layer_helpers import to_2tuple
 
+
  # For each layer they defined a function in "layer_ours.py"
 
 def _cfg(url='', **kwargs):
