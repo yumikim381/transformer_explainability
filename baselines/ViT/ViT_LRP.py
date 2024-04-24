@@ -36,34 +36,7 @@ default_cfgs = {
         mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
 }
 
-def compute_rollout_attention(all_layer_matrices, start_layer=0):
-    """
-    all_layer_matrices: A list of tensors where each tensor is an attention matrix from a consecutive transformer layer.
-    start_layer: The starting layer from which to begin the calculation of rollout attention. The default value is 0, which indicates starting from the first layer.
-    num_tokens: The number of tokens or sequence elements in the attention matrix, determined by the second dimension of the first layer's attention matrix.
-    batch_size: The batch size, determined by the first dimension of the first layer's attention matrix.
-    eye - identity matrix , This identity matrix is expanded to match the batch size and moved to the same device as the attention matrices to ensure compatibility.
-    """
-    # adding residual consideration
-    num_tokens = all_layer_matrices[0].shape[1]
-    batch_size = all_layer_matrices[0].shape[0]
-    eye = torch.eye(num_tokens).expand(batch_size, num_tokens, num_tokens).to(all_layer_matrices[0].device)
-    """The identity matrix is added to each attention matrix in all_layer_matrices. 
-    This step incorporates the residual connection typically used in transformer architectures,
-    ensuring that each token retains a portion of its original state besides what is transformed by attention.
-    """
-    all_layer_matrices = [all_layer_matrices[i] + eye for i in range(len(all_layer_matrices))]
-    # all_layer_matrices = [all_layer_matrices[i] / all_layer_matrices[i].sum(dim=-1, keepdim=True)
-    #                       for i in range(len(all_layer_matrices))]
-    joint_attention = all_layer_matrices[start_layer]
-    """
-    The function initializes the joint_attention with the attention matrix from the start_layer.
-    It then iteratively computes the product of this joint_attention matrix 
-    with each subsequent attention matrix using batch matrix multiplication (bmm)
-    """
-    for i in range(start_layer+1, len(all_layer_matrices)):
-        joint_attention = all_layer_matrices[i].bmm(joint_attention)
-    return joint_attention
+
 
 #classification head 
 # This is the two layer MLP head to classify the image based on [CLS] token embedding.
@@ -287,27 +260,37 @@ class Block(nn.Module):
 
 class PatchEmbed(nn.Module):
     """
-    Get patch embeddings
-    The paper splits the image into patches of equal size and do a linear transformation on the flattened pixels for each patch.
-
-    We implement the same thing through a convolution layer, because it's simpler to implement.
+    - responsible for converting an input image into a sequence of flattened, embedded patches
+    Get patch embeddings 
+    -splits the image into patches of equal size and do a linear transformation on the flattened pixels for each patch.
+    - implement through a convolution layer, because it's simpler to implement.
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768):
         #in_chanss is the number of channels in the input image (3 for rgb)
         # transformer embeddings size for embed_dim
         super().__init__()
+        """
+        Both img_size and patch_size are converted to tuples using to_2tuple to ensure they are expressed as (height, width)
+        """
         img_size = to_2tuple(img_size)
         patch_size = to_2tuple(patch_size)
+        """
+        num_patches is calculated based on the division of the image dimensions by the patch dimensions. 
+        This computes how many patches the image will be divided into across its width and height."""
         num_patches = (img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0])
         self.img_size = img_size
         self.patch_size = patch_size
         self.num_patches = num_patches
-
-        self.proj = Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
         """
         We create a convolution layer with a kernel size and and stride length equal to patch size. 
         This is equivalent to splitting the image into patches and doing a linear transformation on each patch.
         """ 
+        self.proj = Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        """
+        output of this layer will be a tensor where each "pixel" in the output corresponds to one patch of the input.
+        Each patch is independently transformed to the embedding dimension embed_dim.
+        """
+
     def forward(self, x):
         #x is the input image of shape [batch_size, channels, height, width]
         B, C, H, W = x.shape
@@ -315,31 +298,85 @@ class PatchEmbed(nn.Module):
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         #Apply convolution layer
+        """
+        The output of the convolution layer is first flattened starting from the third dimension. 
+        This flattening operation converts the 2D patch embeddings into a 1D format per patch.
+        It then transposes the second and third dimensions, which adjusts the tensor shape 
+        to [batch_size, num_patches, embed_dim]. This results in a sequence of embedded patches suitable 
+        for processing by the subsequent transformer blocks.
+        """
         x = self.proj(x).flatten(2).transpose(1, 2)
         return x
 
     def relprop(self, cam, **kwargs):
+        # [batch_size, num_patches, embed_dim]. The transpose changes this to [batch_size, embed_dim, num_patches].
         cam = cam.transpose(1,2)
+        """
+        This step essentially maps the flattened patch embeddings back into their original positions in the 2D grid of the image.
+        """
         cam = cam.reshape(cam.shape[0], cam.shape[1],
                      (self.img_size[0] // self.patch_size[0]), (self.img_size[1] // self.patch_size[1]))
         return self.proj.relprop(cam, **kwargs)
 
+def compute_rollout_attention(all_layer_matrices, start_layer=0):
+    """
+    all_layer_matrices: A list of tensors where each tensor is an attention matrix from a consecutive transformer layer.
+    start_layer: The starting layer from which to begin the calculation of rollout attention. The default value is 0, which indicates starting from the first layer.
+    num_tokens: The number of tokens or sequence elements in the attention matrix, determined by the second dimension of the first layer's attention matrix.
+    batch_size: The batch size, determined by the first dimension of the first layer's attention matrix.
+    eye - identity matrix , This identity matrix is expanded to match the batch size and moved to the same device as the attention matrices to ensure compatibility.
+    """
+    # adding residual consideration
+    num_tokens = all_layer_matrices[0].shape[1]
+    batch_size = all_layer_matrices[0].shape[0]
+    eye = torch.eye(num_tokens).expand(batch_size, num_tokens, num_tokens).to(all_layer_matrices[0].device)
+    """The identity matrix is added to each attention matrix in all_layer_matrices. 
+    This step incorporates the residual connection typically used in transformer architectures,
+    ensuring that each token retains a portion of its original state besides what is transformed by attention.
+    """
+    all_layer_matrices = [all_layer_matrices[i] + eye for i in range(len(all_layer_matrices))]
+    # all_layer_matrices = [all_layer_matrices[i] / all_layer_matrices[i].sum(dim=-1, keepdim=True)
+    #                       for i in range(len(all_layer_matrices))]
+    joint_attention = all_layer_matrices[start_layer]
+    """
+    The function initializes the joint_attention with the attention matrix from the start_layer.
+    It then iteratively computes the product of this joint_attention matrix 
+    with each subsequent attention matrix using batch matrix multiplication (bmm)
+    """
+    for i in range(start_layer+1, len(all_layer_matrices)):
+        joint_attention = all_layer_matrices[i].bmm(joint_attention)
+    return joint_attention
 
 class VisionTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, mlp_head=False, drop_rate=0., attn_drop_rate=0.):
+        #Initializes the VisionTransformer class inheriting from nn.Module.
+        # number of layers (depth) - number of transformer blocks 
         super().__init__()
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.patch_embed = PatchEmbed(
                 img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
         num_patches = self.patch_embed.num_patches
-
+        """
+        pos_embed
+        1: This represents a single batch of positional embeddings that can be expanded to match any batch size during training.
+        num_patches + 1: The total number of patches that the image is split into, plus one additional slot for the [CLS] token, which is used for classification. Each patch and the [CLS] token will have a unique positional embedding.
+        embed_dim: The dimensionality of each positional embedding vector, which matches the dimensionality of the patch embeddings and the [CLS] token embedding.
+        """
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
+        """
+        1: One batch of [CLS] token embeddings, which can be expanded to match the batch size during training.
+        1: There is only one [CLS] token per image or per sequence.
+        embed_dim: The dimensionality of the [CLS] token embedding, which is the same as the dimensionality of the positional embeddings and the patch embeddings.
+        """
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-
+        """
+         series of transformer blocks (self.blocks) is created, 
+         where each block consists of multi-head self-attention and MLP layers
+        """
         self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
@@ -356,10 +393,15 @@ class VisionTransformer(nn.Module):
 
         # FIXME not quite sure what the proper weight init is supposed to be,
         # normal / trunc normal w/ std == .02 similar to other Bert like transformers
+        """
+        trunc_normal_ is a function used to initialize the values of a tensor with values drawn from a truncated normal distribution. 
+        This type of distribution is a normal distribution where values whose magnitude is more than a certain number of standard deviations from the mean are dropped and redrawn
+        """
         trunc_normal_(self.pos_embed, std=.02)  # embeddings same as weights?
         trunc_normal_(self.cls_token, std=.02)
         self.apply(self._init_weights)
 
+        ## IndexSelect for selecting cls tokens 
         self.pool = IndexSelect()
         self.add = Add()
 
@@ -389,19 +431,33 @@ class VisionTransformer(nn.Module):
         B = x.shape[0]
         x = self.patch_embed(x)
 
+        """
+        Prepends the [CLS] token and adds positional embeddings to the sequence.
+        """
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
-        # Add positional embeddings for the given patches
         x = self.add([x, self.pos_embed])
-
+        """
+        Registers a hook to save input gradients for interpretability.
+        """
         x.register_hook(self.save_inp_grad)
 
         for blk in self.blocks:
             x = blk(x)
 
         x = self.norm(x)
+        """
+        This indicates that the method should select the element at index 0 along dimension 1 for each item in the batch. 
+        The [CLS] token is usually positioned at the start of the sequence, hence the index 0.
+        """
         x = self.pool(x, dim=1, indices=torch.tensor(0, device=x.device))
+        """
+        [batch_size, 1, feature_dim] to [batch_size, feature_dim],
+        """
         x = x.squeeze(1)
+        """
+        Passing through the Classification Head
+        """
         x = self.head(x)
         return x
 
@@ -441,14 +497,18 @@ class VisionTransformer(nn.Module):
         elif method == "transformer_attribution" or method == "grad":
             cams = []
             for blk in self.blocks:
+                #Cam is relevance score and grad is gradients of attention 
                 grad = blk.attn.get_attn_gradients()
                 cam = blk.attn.get_attn_cam()
+                #Reshape to ensure they align properly for element-wise multiplication. 
                 cam = cam[0].reshape(-1, cam.shape[-1], cam.shape[-1])
                 grad = grad[0].reshape(-1, grad.shape[-1], grad.shape[-1])
                 #Equation 13 in paper 
                 cam = grad * cam
+                #clamp method in PyTorch is used to limit the values in a tensor to a specified range. 
                 cam = cam.clamp(min=0).mean(dim=0)
                 cams.append(cam.unsqueeze(0))
+            #So at the end, cams should be "A list of tensors where each tensor is an attention matrix from a consecutive transformer layer"
             rollout = compute_rollout_attention(cams, start_layer=start_layer)
             cam = rollout[:, 0, 1:]
             return cam
