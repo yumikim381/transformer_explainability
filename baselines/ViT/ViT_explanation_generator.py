@@ -49,6 +49,7 @@ class Baselines:
 
     def generate_cam_attn(self, input, index=None):
         output = self.model(input.cuda(), register_hook=True)
+        #Index for the strongest class in the picture 
         if index == None:
             index = np.argmax(output.cpu().data.numpy())
 
