@@ -25,11 +25,22 @@ def forward_hook(self, input, output):
         self.X.requires_grad = True
 
     self.Y = output
+    """The purpose of this hook is to capture and store the input (X) and output (Y) of the module during the forward pass.
+    Inputs are detached from their previous operations in the computation graph (using detach()) 
+    to prevent further gradients from flowing into them during this operation 
+    but are set to require gradients (requires_grad = True). This setup is crucial for later computing gradients 
+    with respect to these inputs during the backward pass.
+    If the input is a list or tuple (which might be the case in modules that take multiple inputs), 
+    it processes and stores each input separately."""
 
 
 def backward_hook(self, grad_input, grad_output):
     self.grad_input = grad_input
     self.grad_output = grad_output
+    """
+    It captures the gradients with respect to the inputs (grad_input)
+    and the gradients with respect to the output (grad_output) of the module during the backward pass.
+    """
 
 
 class RelProp(nn.Module):
@@ -37,10 +48,19 @@ class RelProp(nn.Module):
         super(RelProp, self).__init__()
         # if not self.training:
         self.register_forward_hook(forward_hook)
+        """
+        The constructor registers the forward_hook to the module, 
+        ensuring that the input and output at each forward pass are captured and available for further processing.
+        """
 
     def gradprop(self, Z, X, S):
         C = torch.autograd.grad(Z, X, S, retain_graph=True)
         return C
+        """
+        This method is designed to compute the gradients of a given tensor Z with respect to inputs X, guided by the sensitivity S.
+        It uses torch.autograd.grad, which computes and returns the gradients of Z with respect to X using S as the gradients of the output. 
+        This method can handle situations where gradients need to be computed in a custom way rather than through the standard backward propagation.
+        """
 
     def relprop(self, R, alpha):
         return R

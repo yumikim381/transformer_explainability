@@ -8,6 +8,7 @@
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
+from modules.layers_ours import *
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
 try:
@@ -24,14 +25,14 @@ except:
 
 
 class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=None, drop=0.):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
+        self.fc1 = Linear(in_features, hidden_features)
+        self.act = GELU()
+        self.fc2 = Linear(hidden_features, out_features)
+        self.drop = Dropout(drop)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -122,10 +123,10 @@ class WindowAttention(nn.Module):
         relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
         self.register_buffer("relative_position_index", relative_position_index)
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
+        self.qkv = Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = Dropout(attn_drop)
+        self.proj = Linear(dim, dim)
+        self.proj_drop = Dropout(proj_drop)
 
         trunc_normal_(self.relative_position_bias_table, std=.02)
         self.softmax = nn.Softmax(dim=-1)
@@ -162,6 +163,13 @@ class WindowAttention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
+
+    def relprop(self,cam,**kwargs):
+        cam = self.proj_drop.relprop(cam, **kwargs)
+        cam = self.proj.relprop(cam, **kwargs)
+        
+
+
 
     def extra_repr(self) -> str:
         return f'dim={self.dim}, window_size={self.window_size}, num_heads={self.num_heads}'

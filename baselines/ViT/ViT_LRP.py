@@ -1,5 +1,5 @@
-""" Vision Transformer (ViT) in PyTorch
-Hacked together by / Copyright 2020 Ross Wightman
+""" 
+So key idea is that we only need to watch out for skip connection(add layer) and matrix multiplication for relevance propagation 
 """
 import torch
 import torch.nn as nn
@@ -37,14 +37,30 @@ default_cfgs = {
 }
 
 def compute_rollout_attention(all_layer_matrices, start_layer=0):
+    """
+    all_layer_matrices: A list of tensors where each tensor is an attention matrix from a consecutive transformer layer.
+    start_layer: The starting layer from which to begin the calculation of rollout attention. The default value is 0, which indicates starting from the first layer.
+    num_tokens: The number of tokens or sequence elements in the attention matrix, determined by the second dimension of the first layer's attention matrix.
+    batch_size: The batch size, determined by the first dimension of the first layer's attention matrix.
+    eye - identity matrix , This identity matrix is expanded to match the batch size and moved to the same device as the attention matrices to ensure compatibility.
+    """
     # adding residual consideration
     num_tokens = all_layer_matrices[0].shape[1]
     batch_size = all_layer_matrices[0].shape[0]
     eye = torch.eye(num_tokens).expand(batch_size, num_tokens, num_tokens).to(all_layer_matrices[0].device)
+    """The identity matrix is added to each attention matrix in all_layer_matrices. 
+    This step incorporates the residual connection typically used in transformer architectures,
+    ensuring that each token retains a portion of its original state besides what is transformed by attention.
+    """
     all_layer_matrices = [all_layer_matrices[i] + eye for i in range(len(all_layer_matrices))]
     # all_layer_matrices = [all_layer_matrices[i] / all_layer_matrices[i].sum(dim=-1, keepdim=True)
     #                       for i in range(len(all_layer_matrices))]
     joint_attention = all_layer_matrices[start_layer]
+    """
+    The function initializes the joint_attention with the attention matrix from the start_layer.
+    It then iteratively computes the product of this joint_attention matrix 
+    with each subsequent attention matrix using batch matrix multiplication (bmm)
+    """
     for i in range(start_layer+1, len(all_layer_matrices)):
         joint_attention = all_layer_matrices[i].bmm(joint_attention)
     return joint_attention
@@ -77,8 +93,15 @@ class Mlp(nn.Module):
         cam = self.fc1.relprop(cam, **kwargs)
         return cam
 
-
+#Multi-head attention mechanism
 class Attention(nn.Module):
+    """
+    qkv_bias: Boolean indicating whether to include bias terms in the query, key, and value projections.
+    attn_drop, proj_drop: Dropout rates for attention weights and output projection.
+    num_heads, scale: The number of heads and scaling factor used to normalize the dot products during attention computation.
+    qkv: A linear layer that expands input dimension dim to three times its size for generating query, key, and value matrices.
+    attn_drop, proj_drop: Dropout layers for attention weights and the final projected output.
+    """
     def __init__(self, dim, num_heads=8, qkv_bias=False,attn_drop=0., proj_drop=0.):
         super().__init__()
         self.num_heads = num_heads
@@ -132,16 +155,32 @@ class Attention(nn.Module):
 
     def get_attn_gradients(self):
         return self.attn_gradients
-
+    """
+        Shape Handling: Computes number of batches b, number of tokens n, and reshapes x for multi-head attention.
+        Query, Key, Value Computation: Uses the qkv linear transformation and reshapes the output to separate queries, keys, and values.
+        Dot Product and Scaling: Computes dot products between queries and keys, scales the results, and applies softmax to get the attention weights.
+        """
     def forward(self, x):
+        # third parameter is feature size 
         b, n, _, h = *x.shape, self.num_heads
         qkv = self.qkv(x)
+        """
+        The projection output is reshaped and split into three separate tensors for queries (q), keys (k), and values (v). 
+        The reshaping arranges each tensor to be in the format suitable for multi-head attention, 
+        where h is the number of heads and d is the dimension per head.
+        """
         q, k, v = rearrange(qkv, 'b n (qkv h d) -> qkv b h n d', qkv=3, h=h)
 
         self.save_v(v)
-
+        """
+        Computes the dot product of queries and keys, which forms the basis of the attention mechanism. 
+        The result is scaled down by the square root of the dimension per head to stabilize gradients during training (preventing values from becoming too large).
+        """
         dots = self.matmul1([q, k]) * self.scale
-
+        """
+        Softmax is applied to the scaled dot products to obtain attention weights, 
+        which represent the importance of each key to each query.
+        """
         attn = self.softmax(dots)
         attn = self.attn_drop(attn)
 
@@ -158,13 +197,29 @@ class Attention(nn.Module):
     def relprop(self, cam, **kwargs):
         cam = self.proj_drop.relprop(cam, **kwargs)
         cam = self.proj.relprop(cam, **kwargs)
+        """
+        reshaped to separate the concatenated head dimensions back into separate heads (h), 
+        preparing it for propagation through the multi-head structure.
+        """
         cam = rearrange(cam, 'b n (h d) -> b h n d', h=self.num_heads)
 
         # attn = A*V
+        """
+        This splits the relevance into components corresponding to the attention weights (cam1) 
+        and the values (cam_v) after being combined in the attention calculation (self.matmul2 corresponds to attn = A*V).
+        """
         (cam1, cam_v)= self.matmul2.relprop(cam, **kwargs)
+        """
+        https://github.com/hila-chefer/Transformer-Explainability/issues/10
+        we divide each of the cams by 2 after the matmul operation, which is identical to applying our normalization.
+        It is important to notice that this is the case for matmul only, for add layers, 
+        the sums of the two relevancies may not be equal, as we point out in the paper.
+        => For add layers its in layers implementation 
+
+        """
         cam1 /= 2
         cam_v /= 2
-
+        # Save Intermediate Relevances:
         self.save_v_cam(cam_v)
         self.save_attn_cam(cam1)
 
@@ -196,19 +251,28 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, drop=drop)
 
+        # Residual connection 
         self.add1 = Add()
         self.add2 = Add()
+        """
+        duplicate the input tensor so that one copy can be transformed while the other is passed through unchanged, 
+        supporting the residual connections.
+        """
+        
         self.clone1 = Clone()
         self.clone2 = Clone()
 
     def forward(self, x):
         x1, x2 = self.clone1(x, 2)
+        #Pass x2 through norm and attention layer and add the result to x1 
         x = self.add1([x1, self.attn(self.norm1(x2))])
+        # clone the subresult again and do the same 
         x1, x2 = self.clone2(x, 2)
         x = self.add2([x1, self.mlp(self.norm2(x2))])
         return x
 
     def relprop(self, cam, **kwargs):
+        #Just reversing the actions from VIT
         (cam1, cam2) = self.add2.relprop(cam, **kwargs)
         cam2 = self.mlp.relprop(cam2, **kwargs)
         cam2 = self.norm2.relprop(cam2, **kwargs)

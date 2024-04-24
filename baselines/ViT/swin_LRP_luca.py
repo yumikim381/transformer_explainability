@@ -36,8 +36,12 @@ def _cfg(url='', **kwargs):
     }
 
 
+
 default_cfgs = {
     # patch models
+    'swin': _cfg(
+        url='https://github.com/SwinTransformer/storage/releases/download/v1.0.8/swin_small_patch4_window7_224_22kto1k_finetune.pth',
+    ),
     'vit_small_patch16_224': _cfg(
         url='https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/vit_small_p16_224-15ec54c9.pth',
     ),
@@ -99,10 +103,10 @@ class Mlp(nn.Module):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.fc1 = Linear(in_features, hidden_features)
         self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
+        self.fc2 = Linear(hidden_features, out_features)
+        self.drop = Dropout(drop)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -159,13 +163,13 @@ class WindowAttention(nn.Module):
         relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
         self.register_buffer("relative_position_index", relative_position_index)
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
+        self.qkv = Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = Dropout(attn_drop)
+        self.proj = Linear(dim, dim)
+        self.proj_drop = Dropout(proj_drop)
 
         trunc_normal_(self.relative_position_bias_table, std=.02)
-        self.softmax = nn.Softmax(dim=-1)
+        self.softmax = Softmax(dim=-1)
         
         
         # x = (attn @ v)
@@ -481,3 +485,13 @@ class SwinTransformerBlock(nn.Module): # SwinLayer
         # norm2
         flops += self.dim * H * W
         return flops
+    
+def swin_transformer(pretrained=False, **kwargs):
+    model = swin_transformer(
+        patch_size=4, window_size=7, embed_dim=96, depths=(2, 2, 6, 2), num_heads=(3, 6, 12, 24), **kwargs)
+    
+    model.default_cfg = default_cfgs['swin']
+    if pretrained:
+        load_pretrained(
+            model, num_classes=model.num_classes)
+    return model
