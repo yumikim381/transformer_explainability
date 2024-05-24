@@ -29,7 +29,9 @@ default_cfgs = {
         url='https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-weights/vit_small_p16_224-15ec54c9.pth',
     ),
     'vit_base_patch16_224': _cfg(
+        #timm/vit_base_patch16_224.orig_in21k_ft_in1k
         url='https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-vitjx/jx_vit_base_p16_224-80ecf9dd.pth',
+        
         mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5),
     ),
     'vit_large_patch16_224': _cfg(
@@ -568,6 +570,7 @@ def vit_large_patch16_224(pretrained=False, **kwargs):
     model.default_cfg = default_cfgs['vit_large_patch16_224']
     if pretrained:
         load_pretrained(model, num_classes=model.num_classes, in_chans=kwargs.get('in_chans', 3))
+
     return model
 
 def deit_base_patch16_224(pretrained=False, **kwargs):
